@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.npm-cache/
+*.local
+logs/
+node_modules.partial/
+release/
+.gradle-user-home/
+
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+*.pem
+*.key
