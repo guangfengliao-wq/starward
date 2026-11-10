@@ -1,15 +1,16 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { createSolarRenderer, planets, type SolarView } from './solarRenderer'
+import AppUpdate from './AppUpdate.vue'
+import { bodyNames, createSolarRenderer, orbitTargets, type SolarView } from './solarRenderer'
 import messierObjects from '../assets/messier.json'
 
-const names = ['太阳', ...planets.map(({ name }) => name)]
-const views: Record<SolarView, string> = {
-  solar: '太阳系',
-  'earth-orbit': '地球上空',
-  'earth-surface': '地面仰望',
-}
+const views: { value: SolarView; name: string }[] = [
+  { value: 'solar', name: '太阳系' },
+  { value: 'earth-surface', name: '地面仰望' },
+  ...orbitTargets.map(({ id, name }) => ({ value: `${id}-orbit` as const, name: `${name}上空` })),
+]
 const view = ref<SolarView>('solar')
+const viewName = computed(() => views.find(({ value }) => value === view.value)?.name ?? views[0].name)
 const openPanel = ref<'view' | 'settings' | null>(null)
 const viewTrigger = ref<HTMLButtonElement>()
 const settingsTrigger = ref<HTMLButtonElement>()
@@ -26,6 +27,7 @@ const showDeepSky = ref(true)
 const showConstellationLines = ref(true)
 const showConstellationNames = ref(true)
 const showAnnotations = ref(true)
+const timeLapse = ref(false)
 const onlyGalaxy = ref(false)
 const panoramaOnly = computed(() => view.value === 'earth-surface' && onlyGalaxy.value)
 let resetView = () => {}
@@ -34,6 +36,7 @@ let toggleGalaxyComparison = () => {}
 let toggleDeepSky = () => {}
 let toggleOnlyGalaxy = () => {}
 let showNorthSky = () => {}
+let toggleTimeLapse = () => {}
 let dispose = () => {}
 
 function closePanel(restoreFocus = false) {
@@ -66,6 +69,10 @@ onMounted(() => {
   let lastPixelRatio = 0
   let zoom = 1
   let wheelTimer: number | undefined
+  let animationFrame = 0
+  let previousFrame: number | undefined
+  let axisFadeFrame = 0
+  let axisOpacity = 0
   const pointers = new Map<number, PointerEvent>()
 
   function render() {
@@ -125,7 +132,25 @@ onMounted(() => {
       placeLabel(name ? `${id} ${name}` : id, x, y, 'deep-sky')
     } : undefined, showConstellationLines.value, bounds && showConstellationNames.value
       ? (name, x, y) => placeLabel(name, x, y, 'constellation')
-      : undefined)
+      : undefined, showAnnotations.value ? axisOpacity : 0)
+  }
+
+  function clearAxisFade(opacity = 0) {
+    cancelAnimationFrame(axisFadeFrame)
+    axisFadeFrame = 0
+    axisOpacity = opacity
+  }
+
+  function fadeAxis() {
+    if (!axisOpacity || axisFadeFrame) return
+    const startedAt = performance.now()
+    const fadeDuration = 300
+    function tick(timestamp: number) {
+      axisOpacity = 1 - Math.min(1, Math.max(0, timestamp - startedAt) / fadeDuration)
+      axisFadeFrame = axisOpacity > 0 ? requestAnimationFrame(tick) : 0
+      if (!timeLapse.value) render()
+    }
+    axisFadeFrame = requestAnimationFrame(tick)
   }
 
   function initialize() {
@@ -141,9 +166,33 @@ onMounted(() => {
   }
 
   resetView = () => {
+    clearAxisFade()
     renderer?.resetOrientation(view.value)
-    zoom = 1
+    zoom = timeLapse.value ? renderer?.satelliteOverviewZoom(view.value) ?? 1 : 1
     render()
+  }
+
+  function animate(timestamp: number) {
+    if (previousFrame !== undefined && !contextLost && !document.hidden) {
+      renderer?.advanceTime(Math.min((timestamp - previousFrame) / 1000, 0.05), view.value)
+      render()
+    }
+    previousFrame = timestamp
+    animationFrame = requestAnimationFrame(animate)
+  }
+
+  toggleTimeLapse = () => {
+    if (!renderer) return
+    timeLapse.value = !timeLapse.value
+    if (timeLapse.value) {
+      zoom = Math.min(zoom, renderer.satelliteOverviewZoom(view.value))
+      previousFrame = undefined
+      animationFrame = requestAnimationFrame(animate)
+      render()
+    } else {
+      cancelAnimationFrame(animationFrame)
+      render()
+    }
   }
 
   showNorthSky = () => {
@@ -157,7 +206,7 @@ onMounted(() => {
     if (!renderer) return
     trueScale.value = !trueScale.value
     renderer.setTrueScale(trueScale.value)
-    zoom = 1
+    zoom = timeLapse.value ? renderer.satelliteOverviewZoom(view.value) : 1
     render()
   }
 
@@ -178,7 +227,8 @@ onMounted(() => {
 
   function changeZoom(factor: number) {
     const maxZoom = view.value === 'solar' && trueScale.value ? 12_000 : 8
-    const minZoom = view.value === 'earth-surface' ? 0.28 : 0.65
+    const minZoom = view.value === 'earth-surface' ? 0.28 :
+      Math.min(0.65, renderer?.satelliteOverviewZoom(view.value) ?? 1)
     zoom = Math.max(minZoom, Math.min(maxZoom, zoom * factor))
   }
 
@@ -186,6 +236,7 @@ onMounted(() => {
     if (event.button !== 0 || pointers.size >= 2) return
     drawing.setPointerCapture(event.pointerId)
     pointers.set(event.pointerId, event)
+    if (pointers.size === 2) fadeAxis()
     render()
   }, options)
 
@@ -201,6 +252,8 @@ onMounted(() => {
     } else {
       const { left, top, width, height } = drawing.getBoundingClientRect()
       if (width > 0 && height > 0) {
+        if (showAnnotations.value && view.value.endsWith('-orbit') && view.value !== 'moon-orbit' &&
+          (previous.clientX !== event.clientX || previous.clientY !== event.clientY)) clearAxisFade(1)
         renderer?.rotate(
           2 * (previous.clientX - left) / width - 1,
           1 - 2 * (previous.clientY - top) / height,
@@ -215,7 +268,10 @@ onMounted(() => {
   for (const eventName of ['pointerup', 'pointercancel', 'lostpointercapture'] as const) {
     drawing.addEventListener(eventName, (event) => {
       const wasActive = pointers.delete(event.pointerId)
-      if (wasActive && pointers.size === 0) render()
+      if (wasActive && pointers.size === 0) {
+        fadeAxis()
+        render()
+      }
     }, options)
   }
 
@@ -237,6 +293,7 @@ onMounted(() => {
     event.preventDefault()
     contextLost = true
     pointers.clear()
+    clearAxisFade()
     message.value = '三维视图已暂停，正在等待恢复。'
   }, options)
   drawing.addEventListener('webglcontextrestored', () => {
@@ -248,9 +305,11 @@ onMounted(() => {
 
   const observer = new ResizeObserver(render)
   observer.observe(host)
-  watch([showConstellationLines, showConstellationNames], render)
+  watch([showAnnotations, showConstellationLines, showConstellationNames], render)
 
   dispose = () => {
+    cancelAnimationFrame(animationFrame)
+    clearAxisFade()
     listeners.abort()
     observer.disconnect()
     window.clearTimeout(wheelTimer)
@@ -265,9 +324,9 @@ onBeforeUnmount(() => dispose())
   <div class="solar-system" @keydown.esc="closePanel(true)">
     <div ref="surface" class="surface"
       :class="{ 'surface-night': view === 'earth-surface', 'hide-annotations': !showAnnotations || panoramaOnly }">
-      <canvas ref="canvas" :aria-label="`${views[view]}三维视图`"></canvas>
+      <canvas ref="canvas" :aria-label="`${viewName}三维视图`"></canvas>
       <div v-show="!message" ref="labels" class="labels" aria-hidden="true">
-        <span v-for="name in names" :key="name" hidden>{{ name }}</span>
+        <span v-for="name in bodyNames" :key="name" hidden>{{ name }}</span>
       </div>
       <div v-show="!message" ref="starLabels" class="labels star-labels" aria-hidden="true">
         <span v-for="slot in starLabelSlots" :key="slot" hidden></span>
@@ -279,15 +338,15 @@ onBeforeUnmount(() => dispose())
     </div>
     <div v-if="openPanel" class="panel-dismiss" aria-hidden="true" @pointerdown="closePanel()"></div>
     <div class="view-bar">
-      <div class="view-controls">
+      <div class="view-controls glass-dock">
         <div class="toolbar-group">
           <button ref="viewTrigger" class="mode-button toolbar-button" type="button"
-            :aria-label="`观测视角 · ${views[view]}`" :aria-expanded="openPanel === 'view'"
+            :aria-label="`观测视角 · ${viewName}`" :aria-expanded="openPanel === 'view'"
             :disabled="Boolean(message)" @click="openPanel = openPanel === 'view' ? null : 'view'">
-            {{ views[view] }} <span class="chevron" aria-hidden="true"></span>
+            {{ viewName }} <span class="chevron" aria-hidden="true"></span>
           </button>
-          <section v-if="openPanel === 'view'" class="toolbar-popover" aria-label="观测视角">
-            <button v-for="(name, value) in views" :key="value" class="popover-item" type="button"
+          <section v-if="openPanel === 'view'" class="toolbar-popover glass-surface" aria-label="观测视角">
+            <button v-for="{ name, value } in views" :key="value" class="popover-item" type="button"
               :aria-pressed="view === value" @click="selectView(value)">
               {{ name }} <span v-if="view === value" aria-hidden="true">✓</span>
             </button>
@@ -296,6 +355,10 @@ onBeforeUnmount(() => dispose())
         <button class="mode-button" type="button" role="switch" :aria-checked="showAnnotations"
           :disabled="Boolean(message) || panoramaOnly" @click="showAnnotations = !showAnnotations">
           <span class="mode-dot" aria-hidden="true"></span>显示标注
+        </button>
+        <button class="mode-button" type="button" :aria-pressed="timeLapse"
+          :disabled="Boolean(message)" @click="toggleTimeLapse" aria-label="轨道延时演示">
+          <span aria-hidden="true">{{ timeLapse ? 'Ⅱ' : '▷' }}</span>延时
         </button>
         <div class="toolbar-group settings-group">
           <button ref="settingsTrigger" class="mode-button toolbar-button" type="button"
@@ -308,7 +371,7 @@ onBeforeUnmount(() => dispose())
             </svg>
             设置
           </button>
-          <section v-if="openPanel === 'settings'" class="toolbar-popover" aria-label="星图设置">
+          <section v-if="openPanel === 'settings'" class="toolbar-popover glass-surface" aria-label="星图设置">
             <button v-if="view === 'earth-surface'" class="popover-item" type="button" role="switch"
               :aria-checked="onlyGalaxy" :disabled="Boolean(message)" @click="toggleOnlyGalaxy">
               <span class="mode-dot" aria-hidden="true"></span>仅银河贴图
@@ -339,6 +402,7 @@ onBeforeUnmount(() => dispose())
             </button>
             <button class="popover-item" type="button" :disabled="Boolean(message)"
               @click="resetView(); closePanel(true)">重置视角</button>
+            <AppUpdate />
           </section>
         </div>
       </div>
@@ -351,7 +415,7 @@ onBeforeUnmount(() => dispose())
   position: relative;
   height: 100%;
   display: grid;
-  grid-template-rows: minmax(180px, 1fr) auto;
+  grid-template-rows: minmax(180px, 1fr);
 }
 
 .surface {
@@ -424,14 +488,21 @@ canvas:active { cursor: grabbing; }
 }
 
 .view-bar {
-  position: relative;
+  position: absolute;
+  inset: auto auto 10px 14px;
+  max-width: calc(100% - 28px);
   z-index: 1;
-  padding: 10px 14px;
-  border-top: 1px solid var(--border);
-  background: var(--panel);
 }
 
-.view-controls { display: flex; flex-wrap: wrap; gap: 8px; }
+.view-controls {
+  display: flex;
+  flex-wrap: wrap;
+  width: fit-content;
+  max-width: 100%;
+  gap: 6px;
+  padding: 5px;
+  border-radius: 28px;
+}
 .view-controls [aria-checked="true"] { border-color: var(--accent); }
 .view-controls [aria-checked="true"] .mode-dot { background: var(--accent); }
 .view-bar button { flex: none; }
@@ -456,10 +527,7 @@ canvas:active { cursor: grabbing; }
   max-height: max(88px, calc(100dvh - 128px - env(safe-area-inset-top) - env(safe-area-inset-bottom)));
   overflow-y: auto;
   padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--panel);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
+  border-radius: 20px;
 }
 
 .popover-item {
@@ -470,7 +538,7 @@ canvas:active { cursor: grabbing; }
   min-height: 44px;
   padding: 0 12px;
   border: 0;
-  border-radius: 9px;
+  border-radius: 14px;
   background: transparent;
   color: var(--text);
   text-align: left;
@@ -478,26 +546,34 @@ canvas:active { cursor: grabbing; }
   font-size: 14px;
   cursor: pointer;
 }
-.popover-item[aria-pressed="true"], .popover-item:hover:not(:disabled) {
-  background: var(--background);
+.popover-item[aria-pressed="true"] {
+  background: var(--press-overlay);
   color: var(--accent);
+}
+@media (hover: hover) {
+  .popover-item:hover:not(:disabled) {
+    background: var(--glass-light);
+    color: var(--accent);
+  }
 }
 .popover-item[aria-pressed] { justify-content: space-between; }
 .popover-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.toolbar-popover[aria-label="观测视角"] { max-height: min(55dvh, 420px); }
 
 @media (max-width: 720px), (hover: none) and (pointer: coarse) {
-  .solar-system { grid-template-rows: minmax(0, 1fr) auto; }
+  .solar-system { grid-template-rows: minmax(0, 1fr); }
 
   .view-bar {
-    min-width: 0;
-    padding: 4px max(8px, env(safe-area-inset-right)) calc(4px + env(safe-area-inset-bottom))
+    inset: auto max(8px, env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom))
       max(8px, env(safe-area-inset-left));
+    max-width: none;
   }
 
   .view-controls {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 6px;
+    width: 100%;
+    grid-template-columns: minmax(0, 1.45fr) minmax(0, 1.2fr) repeat(2, minmax(0, 1fr));
+    gap: 4px;
   }
 
   .view-controls .mode-button {
@@ -505,6 +581,7 @@ canvas:active { cursor: grabbing; }
     justify-content: center;
     white-space: nowrap;
     padding-inline: 4px;
+    gap: 4px;
     font-size: 13px;
   }
 

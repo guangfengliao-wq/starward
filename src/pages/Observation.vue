@@ -12,7 +12,7 @@ const redLight = ref(false)
 
 <template>
   <main class="observation" :data-red-light="redLight">
-    <header class="app-header">
+    <header class="app-header glass-dock">
       <div class="app-brand">
         <div class="wordmark" lang="en">STARWARD</div>
         <h1>繁星</h1>
@@ -24,11 +24,16 @@ const redLight = ref(false)
         </button>
         <details class="texture-credits">
           <summary class="mode-button" aria-label="关于与素材来源" title="关于与素材来源">ⓘ</summary>
-          <div class="credits-popover">
-            <p>太阳、行星、土星环和银河背景贴图来自
+          <div class="credits-popover glass-surface">
+            <p>太阳、行星、月球、土星环和银河背景贴图来自
               <a href="https://www.solarsystemscope.com/textures/" target="_blank" rel="noopener noreferrer">Solar System Scope / INOVE</a>，
               使用 <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener noreferrer">CC BY 4.0</a> 许可。
               原图随应用打包，土星环按半径映射。行星外观为观测数据加工后的示意。
+            </p>
+            <p>延时演示采用
+              <a href="https://nssdc.gsfc.nasa.gov/planetary/factsheet/" target="_blank" rel="noopener noreferrer">NASA 行星公转和自转周期</a>与
+              <a href="https://ssd.jpl.nasa.gov/sats/elem/" target="_blank" rel="noopener noreferrer">JPL 卫星平均轨道数据</a>。
+              轨道采用简化圆轨道。为便于观察，公转和自转使用各自的演示速度。
             </p>
             <p>恒星数据来自 ESA Hipparcos 星表，使用
               <a href="https://github.com/gmiller123456/hip2000" target="_blank" rel="noopener noreferrer">Greg Miller 整理的 J2000 亮星子集</a>。

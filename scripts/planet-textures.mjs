@@ -15,11 +15,12 @@ function isImage(bytes, name) {
 }
 
 async function downloadImage(name) {
-  const body = name.replace(/^2k_/, '').replace(/\.[^.]+$/, '')
+  const body = name.replace(/^\d+k_/, '').replace(/\.[^.]+$/, '')
   const backup = name.startsWith('8k_')
     ? new URL(name, 'https://raw.githubusercontent.com/smithcg1/DigitalSolarSystem/master/')
     : new URL(`${body}/latest/${name}`, mirror)
-  const urls = [new URL(name, source), backup]
+  const archive = 'https://raw.githubusercontent.com/Shriisoot/Planets-texture/9c2aedaeb89f35814401873f22ce78bb02421dea/'
+  const urls = [new URL(name, source), backup, new URL(name, archive)]
   const errors = []
   for (const url of urls) {
     try {
@@ -60,5 +61,5 @@ if (failures.length) {
   console.error(`以下贴图尚未就绪：\n${failures.join('\n')}\n可从 Solar System Scope 或脚本中的备用源下载缺少的文件，放入 src/assets/planet-textures/，然后运行 npm run textures:check。`)
   process.exitCode = 1
 } else {
-  console.log('太阳、八颗行星、土星环和银河贴图均已就绪。')
+  console.log('太阳、八颗行星、月球、土星环和银河贴图均已就绪。')
 }
