@@ -64,8 +64,6 @@ onMounted(() => {
   let lastWidth = 0
   let lastHeight = 0
   let lastPixelRatio = 0
-  let yaw = 0
-  let pitch = 1.08
   let zoom = 1
   let wheelTimer: number | undefined
   const pointers = new Map<number, PointerEvent>()
@@ -110,7 +108,7 @@ onMounted(() => {
       }
     }
 
-    renderer.draw(view.value, yaw, pitch, zoom, galaxyComparison.value, panoramaOnly.value, (index, x, y, visible) => {
+    renderer.draw(view.value, zoom, galaxyComparison.value, panoramaOnly.value, (index, x, y, visible) => {
       const left = (x + 1) * width / 2
       const top = (1 - y) * height / 2
       const caption = captions[index]
@@ -133,6 +131,7 @@ onMounted(() => {
   function initialize() {
     try {
       renderer = createSolarRenderer(drawing, render)
+      renderer?.resetOrientation(view.value)
       message.value = renderer ? '' : '此设备暂时无法显示三维太阳系。'
       render()
     } catch (error) {
@@ -142,17 +141,14 @@ onMounted(() => {
   }
 
   resetView = () => {
-    yaw = 0
-    pitch = view.value === 'solar' ? 1.08 : 0.65
+    renderer?.resetOrientation(view.value)
     zoom = 1
     render()
   }
 
   showNorthSky = () => {
     if (!renderer) return
-    const angles = renderer.northSkyAngles()
-    yaw = angles.yaw
-    pitch = angles.pitch
+    renderer.resetOrientation(view.value, true)
     zoom = 0.28
     render()
   }
@@ -203,9 +199,15 @@ onMounted(() => {
       const after = Math.hypot(event.clientX - other.clientX, event.clientY - other.clientY)
       if (before > 0 && after > 0) changeZoom(after / before)
     } else {
-      const fullTurn = 2 * Math.PI
-      yaw = (yaw - (event.clientX - previous.clientX) * 0.008) % fullTurn
-      pitch = (pitch + (event.clientY - previous.clientY) * 0.008) % fullTurn
+      const { left, top, width, height } = drawing.getBoundingClientRect()
+      if (width > 0 && height > 0) {
+        renderer?.rotate(
+          2 * (previous.clientX - left) / width - 1,
+          1 - 2 * (previous.clientY - top) / height,
+          2 * (event.clientX - left) / width - 1,
+          1 - 2 * (event.clientY - top) / height,
+        )
+      }
     }
     render()
   }, options)

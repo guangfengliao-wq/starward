@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 import {
   AmbientLight, BackSide, BufferGeometry, DoubleSide, LineBasicMaterial, LineLoop, LineSegments, Mesh,
-  MeshBasicMaterial, MeshLambertMaterial, PerspectiveCamera, PointLight,
+  Matrix4, MeshBasicMaterial, MeshLambertMaterial, PerspectiveCamera, PointLight, Quaternion,
   RingGeometry, Scene, SphereGeometry, sRGBEncoding, Texture, TextureLoader,
   Vector3, WebGLRenderer,
 } from 'three'
@@ -205,22 +205,47 @@ export function createSolarRenderer(canvas: HTMLCanvasElement, invalidate: () =>
   const labeledBodies = [sun, ...bodies]
   const earth = bodies[2]
   const north = new Vector3(0, 1, 0)
-  const east = new Vector3()
+  const origin = new Vector3()
   const vertical = new Vector3()
   const horizontal = new Vector3()
   const target = new Vector3()
   const up = new Vector3()
   const projected = new Vector3()
+  const orientation = new Quaternion()
+  const dragRotation = new Quaternion()
+  const previousRay = new Vector3()
+  const currentRay = new Vector3()
+  const basis = new Matrix4()
   let trueScale = false
 
   return {
-    northSkyAngles() {
-      vertical.copy(earth.position).normalize()
-      east.crossVectors(north, vertical)
-      return {
-        yaw: Math.atan2(northSkyDirection.dot(east), northSkyDirection.dot(north)),
-        pitch: Math.asin(northSkyDirection.dot(vertical)),
+    resetOrientation(view: SolarView, northSky = false) {
+      if (view === 'earth-surface') {
+        vertical.copy(earth.position).normalize()
+        horizontal.copy(north)
+      } else {
+        vertical.copy(north)
+        horizontal.set(0, 0, 1)
       }
+      const pitch = view === 'solar' ? 1.08 : 0.65
+      up.copy(vertical).multiplyScalar(Math.cos(pitch)).addScaledVector(horizontal, -Math.sin(pitch))
+      target.copy(horizontal).multiplyScalar(Math.cos(pitch)).addScaledVector(vertical, Math.sin(pitch))
+      if (view === 'earth-surface') {
+        if (northSky) {
+          target.copy(northSkyDirection)
+          up.copy(vertical)
+        }
+        target.negate()
+      }
+      orientation.setFromRotationMatrix(basis.lookAt(target, origin, up))
+    },
+    rotate(previousX: number, previousY: number, currentX: number, currentY: number) {
+      const projection = camera.projectionMatrix.elements
+      previousRay.set(previousX / projection[0], previousY / projection[5], -1).normalize()
+      currentRay.set(currentX / projection[0], currentY / projection[5], -1).normalize()
+      // Rotate the camera so the new pointer ray meets the previous world direction.
+      dragRotation.setFromUnitVectors(currentRay, previousRay)
+      orientation.multiply(dragRotation).normalize()
     },
     setTrueScale(enabled: boolean) {
       trueScale = enabled
@@ -241,7 +266,7 @@ export function createSolarRenderer(canvas: HTMLCanvasElement, invalidate: () =>
       camera.aspect = width / height
       camera.updateProjectionMatrix()
     },
-    draw(view: SolarView, yaw: number, pitch: number, zoom: number, galaxyComparison: boolean, panoramaOnly: boolean,
+    draw(view: SolarView, zoom: number, galaxyComparison: boolean, panoramaOnly: boolean,
       label: (index: number, x: number, y: number, visible: boolean) => void,
       starLabel?: (name: string, x: number, y: number) => void,
       deepSkyMarker?: (index: number, x: number, y: number) => void,
@@ -265,29 +290,15 @@ export function createSolarRenderer(canvas: HTMLCanvasElement, invalidate: () =>
       }
       labeledBodies.forEach(body => { body.visible = !panoramaOnly && (!fromSurface || body !== earth) })
       orbitLines.forEach(line => { line.visible = view === 'solar' })
-      const sinPitch = Math.sin(pitch)
-      const cosPitch = Math.cos(pitch)
       if (fromSurface) {
         // Observe from the equator on the side facing away from the Sun.
         vertical.copy(earth.position).normalize()
-        east.crossVectors(north, vertical)
-        horizontal.copy(north).multiplyScalar(Math.cos(yaw)).addScaledVector(east, Math.sin(yaw))
         camera.position.copy(earth.position).addScaledVector(vertical, earthRadius)
-        target.copy(camera.position)
-          .addScaledVector(horizontal, cosPitch)
-          .addScaledVector(vertical, sinPitch)
       } else {
-        vertical.copy(north)
-        horizontal.set(Math.sin(yaw), 0, Math.cos(yaw))
-        target.set(0, 0, 0)
-        if (earthOrbit) target.copy(earth.position)
-        camera.position.copy(target)
-          .addScaledVector(horizontal, cosPitch * distance)
-          .addScaledVector(vertical, sinPitch * distance)
+        camera.position.set(0, 0, distance).applyQuaternion(orientation)
+        if (earthOrbit) camera.position.add(earth.position)
       }
-      // The camera's up vector stays perpendicular to the sightline at both poles.
-      camera.up.copy(vertical).multiplyScalar(cosPitch).addScaledVector(horizontal, -sinPitch)
-      camera.lookAt(target)
+      camera.quaternion.copy(orientation)
       const panorama = highResolutionMilkyWay ?? standardMilkyWay
       if (sky.material.map !== panorama) {
         sky.material.map = panorama
